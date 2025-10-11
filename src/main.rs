@@ -1,29 +1,39 @@
 use std::env;
-use std::fs::File;
-use std::io;
-use crate::alignment_engine::AlignmentEngine;
-use crate::alignment_params::AlignmentParams;
+use std::process;
 
-mod match_matrix;
-mod domain;
-mod utils;
-mod score_matrix;
-mod alignment_params;
-mod alignment_engine;
-mod align_result;
+mod alignment;
+mod error;
+mod io;
+mod matrix;
+mod parameters;
+mod traceback;
 
-fn main() -> io::Result<()> {
-    let args: Vec<_> = env::args().collect();
+use alignment::SequenceAligner;
+use error::Result;
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("Error: {}", e);
+        process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
         eprintln!("Usage: {} <input_file> <output_file>", args[0]);
-        std::process::exit(1);
+        process::exit(1);
     }
 
-    let params = AlignmentParams::from_file(&args[1])?;
-    let result = AlignmentEngine::new(params).align();
-    let output = File::create(&args[2])?;
-    result.write_to(output)?;
+    let input_file = &args[1];
+    let output_file = &args[2];
+
+    let params = parameters::AlignmentParameters::from_file(input_file)?;
+    let mut aligner = SequenceAligner::new(params);
+    let result = aligner.align()?;
+
+    io::write_alignment_result(output_file, &result)?;
 
     Ok(())
 }
