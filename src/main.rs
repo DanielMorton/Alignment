@@ -31,7 +31,7 @@ fn run() -> Result<()> {
 
     let params = parameters::AlignmentParameters::from_file(input_file)?;
     let mut aligner = SequenceAligner::new(params);
-    let result = aligner.align()?;
+    let result = aligner.align();
 
     io::write_alignment_result(output_file, &result)?;
 

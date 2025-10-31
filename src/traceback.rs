@@ -1,16 +1,12 @@
 use std::collections::HashSet;
-
 use crate::matrix::{fuzzy_equals, MatrixSet, MatrixType, Pointer};
 use crate::parameters::{AlignmentParameters, AlignmentType};
 
-/// Result of an alignment operation
-#[derive(Debug)]
 pub struct AlignmentResult {
     pub score: f64,
     pub alignments: Vec<(String, String)>,
 }
 
-/// Traceback handler for extracting optimal alignments
 pub struct TracebackEngine<'a> {
     matrices: &'a MatrixSet,
     params: &'a AlignmentParameters,
@@ -21,8 +17,24 @@ impl<'a> TracebackEngine<'a> {
         Self { matrices, params }
     }
 
-    /// Find starting positions for traceback
-    pub fn find_start_positions(&self) -> (f64, HashSet<Pointer>) {
+    pub fn traceback(&self) -> AlignmentResult {
+        let (score, starts) = self.find_start_positions();
+        let mut all_paths = Vec::new();
+
+        for &start in &starts {
+            let paths = self.traceback_from(start);
+            all_paths.extend(paths);
+        }
+
+        let alignments = all_paths
+            .into_iter()
+            .map(|path| self.path_to_alignment(&path))
+            .collect();
+
+        AlignmentResult { score, alignments }
+    }
+
+    fn find_start_positions(&self) -> (f64, HashSet<Pointer>) {
         match self.params.alignment_type {
             AlignmentType::Global => self.find_global_start(),
             AlignmentType::Local => self.find_local_start(),
@@ -54,13 +66,12 @@ impl<'a> TracebackEngine<'a> {
     }
 
     fn find_local_start(&self) -> (f64, HashSet<Pointer>) {
-        let mut max_score = f64::NEG_INFINITY;
+        let mut max_score = 0.0;
         let mut starts = HashSet::new();
 
         for row in 0..self.matrices.m.nrows() {
             for col in 0..self.matrices.m.ncols() {
                 let score = self.matrices.m.score(row, col);
-
                 if score > max_score {
                     max_score = score;
                     starts.clear();
@@ -74,43 +85,21 @@ impl<'a> TracebackEngine<'a> {
         (max_score, starts)
     }
 
-    /// Perform complete traceback from all optimal positions
-    pub fn traceback(&self) -> AlignmentResult {
-        let (score, starts) = self.find_start_positions();
-        let mut all_paths = Vec::new();
-
-        for &start in &starts {
-            let paths = self.traceback_from(start);
-            all_paths.extend(paths);
-        }
-
-        let alignments = all_paths
-            .into_iter()
-            .map(|path| self.path_to_alignment(&path))
-            .collect();
-
-        AlignmentResult { score, alignments }
-    }
-
-    /// Recursively trace back from a given position
     fn traceback_from(&self, position: Pointer) -> Vec<Vec<Pointer>> {
         let (matrix_type, row, col) = position;
 
-        // Base case: reached origin
         if row == 0 && col == 0 {
             return vec![vec![position]];
         }
 
-        let pointers = self.matrices.get(matrix_type).pointers(row, col);
+        let pointers = self.compute_pointers(matrix_type, row, col);
 
-        // No pointers means this is a starting position (local alignment)
         if pointers.is_empty() {
             return vec![vec![position]];
         }
 
-        // Recursively trace back from all pointers
         let mut all_paths = Vec::new();
-        for &pointer in pointers {
+        for pointer in pointers {
             for mut path in self.traceback_from(pointer) {
                 path.push(position);
                 all_paths.push(path);
@@ -120,10 +109,77 @@ impl<'a> TracebackEngine<'a> {
         all_paths
     }
 
-    /// Convert a traceback path to aligned sequences
+    fn compute_pointers(&self, matrix_type: MatrixType, row: usize, col: usize) -> Vec<Pointer> {
+        let score = self.matrices.get(matrix_type).score(row, col);
+        let mut pointers = Vec::new();
+
+        match matrix_type {
+            MatrixType::M => {
+                let match_score = self.params.match_matrix.score(
+                    self.params.seq_a[row],
+                    self.params.seq_b[col]
+                );
+
+                let m_prev = self.matrices.m.score(row - 1, col - 1);
+                let ix_prev = self.matrices.ix.score(row - 1, col - 1);
+                let iy_prev = self.matrices.iy.score(row - 1, col - 1);
+
+                if fuzzy_equals(score, m_prev + match_score) {
+                    pointers.push((MatrixType::M, row - 1, col - 1));
+                }
+                if fuzzy_equals(score, ix_prev + match_score) {
+                    pointers.push((MatrixType::Ix, row - 1, col - 1));
+                }
+                if fuzzy_equals(score, iy_prev + match_score) {
+                    pointers.push((MatrixType::Iy, row - 1, col - 1));
+                }
+            }
+            MatrixType::Ix => {
+                let (dy, ey) = if self.params.alignment_type == AlignmentType::Global
+                    && col == self.matrices.ix.ncols() - 1
+                {
+                    (0.0, 0.0)
+                } else {
+                    (self.params.gap_penalties.dy, self.params.gap_penalties.ey)
+                };
+
+                let m_prev = self.matrices.m.score(row - 1, col);
+                let ix_prev = self.matrices.ix.score(row - 1, col);
+
+                if fuzzy_equals(score, m_prev - dy) {
+                    pointers.push((MatrixType::M, row - 1, col));
+                }
+                if fuzzy_equals(score, ix_prev - ey) {
+                    pointers.push((MatrixType::Ix, row - 1, col));
+                }
+            }
+            MatrixType::Iy => {
+                let (dx, ex) = if self.params.alignment_type == AlignmentType::Global
+                    && row == self.matrices.iy.nrows() - 1
+                {
+                    (0.0, 0.0)
+                } else {
+                    (self.params.gap_penalties.dx, self.params.gap_penalties.ex)
+                };
+
+                let m_prev = self.matrices.m.score(row, col - 1);
+                let iy_prev = self.matrices.iy.score(row, col - 1);
+
+                if fuzzy_equals(score, m_prev - dx) {
+                    pointers.push((MatrixType::M, row, col - 1));
+                }
+                if fuzzy_equals(score, iy_prev - ex) {
+                    pointers.push((MatrixType::Iy, row, col - 1));
+                }
+            }
+        }
+
+        pointers
+    }
+
     fn path_to_alignment(&self, path: &[Pointer]) -> (String, String) {
-        let mut seq_a = Vec::new();
-        let mut seq_b = Vec::new();
+        let mut seq_a = Vec::with_capacity(path.len());
+        let mut seq_b = Vec::with_capacity(path.len());
 
         for &(matrix_type, row, col) in path.iter().rev() {
             match matrix_type {
@@ -132,14 +188,12 @@ impl<'a> TracebackEngine<'a> {
                     seq_b.push(self.params.seq_b[col]);
                 }
                 MatrixType::Ix => {
-                    // Gap in X direction (insert in sequence B)
                     if col < self.matrices.ix.ncols() - 1 {
                         seq_a.push(self.params.seq_a[row]);
                         seq_b.push('_');
                     }
                 }
                 MatrixType::Iy => {
-                    // Gap in Y direction (insert in sequence A)
                     if row < self.matrices.iy.nrows() - 1 {
                         seq_a.push('_');
                         seq_b.push(self.params.seq_b[col]);
@@ -148,9 +202,6 @@ impl<'a> TracebackEngine<'a> {
             }
         }
 
-        (
-            seq_a.into_iter().rev().collect(),
-            seq_b.into_iter().rev().collect(),
-        )
+        (seq_a.into_iter().rev().collect(), seq_b.into_iter().rev().collect())
     }
 }
