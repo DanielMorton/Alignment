@@ -14,40 +14,17 @@ pub enum MatrixType {
 
 pub type Pointer = (MatrixType, usize, usize);
 
-/// Single entry - no pointers stored during fill phase
-#[derive(Clone, Copy)]
-pub struct ScoreEntry {
-    score: f64,
-}
-
-impl ScoreEntry {
-    #[inline(always)]
-    pub fn new(score: f64) -> Self {
-        Self { score }
-    }
-
-    #[inline(always)]
-    pub fn score(&self) -> f64 {
-        self.score
-    }
-
-    #[inline(always)]
-    pub fn set_score(&mut self, score: f64) {
-        self.score = score;
-    }
-}
-
 /// Flat 1D storage for better cache locality
 pub struct ScoreMatrix {
     matrix_type: MatrixType,
-    data: Vec<ScoreEntry>,
+    data: Vec<f64>,
     nrows: usize,
     ncols: usize,
 }
 
 impl ScoreMatrix {
     pub fn new(matrix_type: MatrixType, nrows: usize, ncols: usize) -> Self {
-        let data = vec![ScoreEntry::new(0.0); nrows * ncols];
+        let data = vec![0.0; nrows * ncols];
         Self {
             matrix_type,
             data,
@@ -78,13 +55,13 @@ impl ScoreMatrix {
 
     #[inline(always)]
     pub fn score(&self, row: usize, col: usize) -> f64 {
-        self.data[self.index(row, col)].score()
+        self.data[self.index(row, col)]
     }
 
     #[inline(always)]
     pub fn set_score(&mut self, row: usize, col: usize, score: f64) {
         let idx = self.index(row, col);
-        self.data[idx].set_score(score);
+        self.data[idx] = score;
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::matrix::{fuzzy_equals, MatrixSet, MatrixType};
+use crate::matrix::MatrixSet;
 use crate::parameters::{AlignmentParameters, AlignmentType};
 use crate::traceback::{AlignmentResult, TracebackEngine};
 
@@ -11,6 +11,14 @@ impl SequenceAligner {
     pub fn new(params: AlignmentParameters) -> Self {
         let nrows = params.seq_a.len();
         let ncols = params.seq_b.len();
+
+        // Check memory requirements
+        let total_cells = nrows * ncols * 3; // 3 matrices
+        let bytes_per_cell = 8; // f64
+        let total_mb = (total_cells * bytes_per_cell) / (1024 * 1024);
+
+        eprintln!("Allocating matrices: {}x{} cells ({} MB)", nrows, ncols, total_mb);
+
         let matrices = MatrixSet::new(nrows, ncols);
 
         Self { params, matrices }
@@ -24,9 +32,11 @@ impl SequenceAligner {
 
     fn initialize_matrices(&mut self) {
         let is_local = self.params.alignment_type == AlignmentType::Local;
+        let nrows = self.params.seq_a.len();
+        let ncols = self.params.seq_b.len();
 
         // Initialize first column
-        for row in 0..self.params.seq_a.len() {
+        for row in 0..nrows {
             let match_score = self.params.match_matrix.score(
                 self.params.seq_a[row],
                 self.params.seq_b[0]
@@ -40,7 +50,7 @@ impl SequenceAligner {
         }
 
         // Initialize first row
-        for col in 0..self.params.seq_b.len() {
+        for col in 0..ncols {
             let match_score = self.params.match_matrix.score(
                 self.params.seq_a[0],
                 self.params.seq_b[col]
@@ -63,6 +73,11 @@ impl SequenceAligner {
                 self.update_m(row, col);
                 self.update_ix(row, col);
                 self.update_iy(row, col);
+            }
+
+            // Progress indicator for large alignments
+            if row % 1000 == 0 {
+                eprintln!("Processing row {}/{}", row, nrows);
             }
         }
     }
@@ -131,6 +146,7 @@ impl SequenceAligner {
     }
 
     fn traceback(&self) -> AlignmentResult {
+        eprintln!("Starting traceback...");
         let engine = TracebackEngine::new(&self.matrices, &self.params);
         engine.traceback()
     }

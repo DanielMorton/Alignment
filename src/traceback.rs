@@ -19,12 +19,41 @@ impl<'a> TracebackEngine<'a> {
 
     pub fn traceback(&self) -> AlignmentResult {
         let (score, starts) = self.find_start_positions();
+
+        // Limit number of traceback paths for memory efficiency
+        //const MAX_PATHS: usize = 100;
+        //let starts_limited: Vec<_> = starts.iter().take(MAX_PATHS).copied().collect();
+
+        /*if starts.len() > MAX_PATHS {
+            eprintln!("Warning: Found {} optimal starting positions, limiting to {}",
+                      starts.len(), MAX_PATHS);
+        }*/
+
         let mut all_paths = Vec::new();
 
-        for &start in &starts {
-            let paths = self.traceback_from(start);
+        for (idx, &start) in starts.iter().enumerate() {
+            if idx % 10 == 0 && idx > 0 {
+                eprintln!("Traceback progress: {}/{}", idx, starts.len());
+            }
+
+            let mut paths = self.traceback_from(start);
+
+            // Limit paths per starting position
+            /*if paths.len() > 10 {
+                paths.truncate(10);
+            }*/
+
             all_paths.extend(paths);
+
+            // Global limit on total paths
+            /*if all_paths.len() > 1000 {
+                eprintln!("Warning: Limiting total paths to 1000");
+                all_paths.truncate(1000);
+                break;
+            }*/
         }
+
+        eprintln!("Found {} alignment paths, converting to sequences...", all_paths.len());
 
         let alignments = all_paths
             .into_iter()
@@ -99,10 +128,23 @@ impl<'a> TracebackEngine<'a> {
         }
 
         let mut all_paths = Vec::new();
+
         for pointer in pointers {
-            for mut path in self.traceback_from(pointer) {
+            let mut paths = self.traceback_from(pointer);
+
+            // Limit exponential explosion of paths
+            /*if paths.len() > 10 {
+                paths.truncate(10);
+            }*/
+
+            for mut path in paths {
                 path.push(position);
                 all_paths.push(path);
+
+                // Early exit if too many paths
+                /*if all_paths.len() > 100 {
+                    return all_paths;
+                }*/
             }
         }
 
@@ -115,6 +157,10 @@ impl<'a> TracebackEngine<'a> {
 
         match matrix_type {
             MatrixType::M => {
+                if row == 0 || col == 0 {
+                    return pointers;
+                }
+
                 let match_score = self.params.match_matrix.score(
                     self.params.seq_a[row],
                     self.params.seq_b[col]
@@ -135,6 +181,10 @@ impl<'a> TracebackEngine<'a> {
                 }
             }
             MatrixType::Ix => {
+                if row == 0 {
+                    return pointers;
+                }
+
                 let (dy, ey) = if self.params.alignment_type == AlignmentType::Global
                     && col == self.matrices.ix.ncols() - 1
                 {
@@ -154,6 +204,10 @@ impl<'a> TracebackEngine<'a> {
                 }
             }
             MatrixType::Iy => {
+                if col == 0 {
+                    return pointers;
+                }
+
                 let (dx, ex) = if self.params.alignment_type == AlignmentType::Global
                     && row == self.matrices.iy.nrows() - 1
                 {
