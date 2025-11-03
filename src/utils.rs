@@ -1,5 +1,7 @@
 use num_traits::Zero;
 
+pub static CHUNK_SIZE: usize = 8192;
+
 pub fn max<T: Zero + PartialOrd>(a: T, b: T) -> T {
     if a > b {
         a

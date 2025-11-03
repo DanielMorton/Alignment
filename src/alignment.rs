@@ -2,14 +2,15 @@ use crate::io::parameters::AlignmentParameters;
 use crate::models::score_matrix::MatrixType::{Ix, Iy, M};
 use crate::models::score_matrix::{MatrixType, Pointer};
 use crate::models::AlignGrid;
-use crate::utils::Epsilon;
+use crate::utils::{Epsilon, CHUNK_SIZE};
 use num_traits::Zero;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::Display;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{BufWriter, Write};
 use std::str::FromStr;
+
 
 fn find_traceback_start<T: Copy + Display + Epsilon + FromStr + PartialOrd + Zero>(
     align_grid: &AlignGrid<T>,
@@ -44,8 +45,13 @@ fn find_traceback_start<T: Copy + Display + Epsilon + FromStr + PartialOrd + Zer
             max_loc.insert((Iy, max_row, max_col));
         }
     } else {
+        // Local alignment: search entire M matrix
         max_val = T::zero();
         let m_matrix = &align_grid.m_matrix;
+
+        // Pre-allocate with reasonable capacity
+        max_loc.reserve(16);
+
         for row in 0..m_matrix.nrow {
             for col in 0..m_matrix.ncol {
                 let val = m_matrix.get_score(row, col);
@@ -67,7 +73,7 @@ fn find_traceback_start<T: Copy + Display + Epsilon + FromStr + PartialOrd + Zer
 fn traceback_from_position<T: Clone + Copy + Display + FromStr + Zero>(
     align_grid: &AlignGrid<T>,
     alignment_parameters: &AlignmentParameters<T>,
-    file: &mut File,
+    writer: &mut BufWriter<File>,
     start_matrix: MatrixType,
     start_row: usize,
     start_col: usize,
@@ -78,9 +84,9 @@ fn traceback_from_position<T: Clone + Copy + Display + FromStr + Zero>(
         parent: Option<usize>,
     }
 
-    let mut nodes = Vec::new();
-    let mut stack = Vec::new();
-    let mut leaf_nodes = Vec::new();
+    let mut nodes = Vec::with_capacity(1024);
+    let mut stack = Vec::with_capacity(256);
+    let mut leaf_nodes = Vec::with_capacity(256);
 
     // Add initial node
     nodes.push(Node {
@@ -89,6 +95,7 @@ fn traceback_from_position<T: Clone + Copy + Display + FromStr + Zero>(
     });
     stack.push(0);
 
+    // Build traceback tree using iterative DFS
     while let Some(node_idx) = stack.pop() {
         let (matrix, row, col) = nodes[node_idx].pointer;
 
@@ -113,70 +120,64 @@ fn traceback_from_position<T: Clone + Copy + Display + FromStr + Zero>(
         }
     }
 
+    // Process in chunks to balance memory and I/O
 
-    const CHUNK_SIZE: usize = 16384;
+    let seq_a_chars = &alignment_parameters.sequences.seq_a;
+    let seq_b_chars = &alignment_parameters.sequences.seq_b;
+
+    // Pre-allocate alignment buffers
+    let estimated_len = seq_a_chars.len().max(seq_b_chars.len()) + 100;
 
     for chunk in leaf_nodes.chunks(CHUNK_SIZE) {
-        let mut paths = Vec::new();
         for &leaf_idx in chunk {
-            let mut path = Vec::new();
+            // Reconstruct path by walking back through parents
+            let mut path_len = 0;
             let mut current_idx = Some(leaf_idx);
-
             while let Some(idx) = current_idx {
-                path.push(nodes[idx].pointer);
+                path_len += 1;
                 current_idx = nodes[idx].parent;
             }
 
-            paths.push(path);
-        }
-        let alignments = traceback_paths(&paths, align_grid, alignment_parameters)?;
-        for (align_a, align_b) in alignments {
-            writeln!(file)?;
-            writeln!(file, "{}", align_a)?;
-            writeln!(file, "{}", align_b)?;
+            // Build alignment strings directly
+            let mut align_a = String::with_capacity(estimated_len);
+            let mut align_b = String::with_capacity(estimated_len);
+
+            current_idx = Some(leaf_idx);
+            while let Some(idx) = current_idx {
+                let (m, r, c) = nodes[idx].pointer;
+
+                match m {
+                    M => {
+                        align_a.push(seq_a_chars[r]);
+                        align_b.push(seq_b_chars[c]);
+                    }
+                    Ix => {
+                        if c < align_grid.ix_matrix.ncol - 1 {
+                            align_a.push(seq_a_chars[r]);
+                            align_b.push('_');
+                        }
+                    }
+                    Iy => {
+                        if r < align_grid.iy_matrix.nrow - 1 {
+                            align_a.push('_');
+                            align_b.push(seq_b_chars[c]);
+                        }
+                    }
+                }
+
+                current_idx = nodes[idx].parent;
+            }
+
+            // Write alignment
+            writer.write_all(b"\n")?;
+            writer.write_all(align_a.as_bytes())?;
+            writer.write_all(b"\n")?;
+            writer.write_all(align_b.as_bytes())?;
+            writer.write_all(b"\n")?;
         }
     }
 
     Ok(())
-}
-
-fn traceback_paths<T: Copy + FromStr>(
-    tracebacks: &[Vec<Pointer>],
-    align_grid: &AlignGrid<T>,
-    alignment_parameters: &AlignmentParameters<T>
-) -> Result<Vec<(String, String)>, Box<dyn Error>> {
-    let seq_a_chars = &alignment_parameters.sequences.seq_a;
-    let seq_b_chars = &alignment_parameters.sequences.seq_b;
-    let mut alignments = Vec::new();
-
-    for traceback in tracebacks {
-        let mut align_a = Vec::new();
-        let mut align_b = Vec::new();
-
-        for (m, r, c) in traceback.iter() {
-            match m {
-                M => {
-                    align_a.push(seq_a_chars[*r]);
-                    align_b.push(seq_b_chars[*c]);
-                }
-                Ix => {
-                    if *c < align_grid.ix_matrix.ncol - 1 {
-                        align_a.push(seq_a_chars[*r]);
-                        align_b.push('_');
-                    }
-                }
-                Iy => {
-                    if *r < align_grid.iy_matrix.nrow - 1 {
-                        align_a.push('_');
-                        align_b.push(seq_b_chars[*c]);
-                    }
-                }
-            }
-        }
-
-        alignments.push((align_a.into_iter().collect(), align_b.into_iter().collect()));
-    }
-    Ok(alignments)
 }
 
 /// Perform traceback to generate alignments
@@ -187,35 +188,22 @@ pub fn traceback<T: Copy + FromStr + Display + Epsilon + PartialOrd + Zero>(
 ) -> Result<(), Box<dyn Error>> {
     let (max_val, max_loc) = find_traceback_start(align_grid, alignment_parameters);
 
-    let mut file = File::create(output_file)?;
-    writeln!(file, "{}", max_val)?;
+    let file = File::create(output_file)?;
+    let mut writer = BufWriter::with_capacity(65536, file);
+
+    writeln!(writer, "{}", max_val)?;
 
     for (matrix, row, col) in max_loc {
-        let _ = traceback_from_position(align_grid,
-                                                 alignment_parameters,
-                                                 &mut file,
-                                                 matrix,
-                                                 row,
-                                                 col)?;
+        traceback_from_position(
+            align_grid,
+            alignment_parameters,
+            &mut writer,
+            matrix,
+            row,
+            col
+        )?;
     }
 
-    Ok(())
-}
-
-/// Write output to file
-pub fn write_output<T: Display>(
-    output_file: &str,
-    max_val: T,
-    alignments: &[(String, String)],
-) -> io::Result<()> {
-    let mut file = File::create(output_file)?;
-    writeln!(file, "{}", max_val)?;
-
-    for (align_a, align_b) in alignments {
-        writeln!(file)?;
-        writeln!(file, "{}", align_a)?;
-        writeln!(file, "{}", align_b)?;
-    }
-
+    writer.flush()?;
     Ok(())
 }

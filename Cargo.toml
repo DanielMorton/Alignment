@@ -4,9 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ndarray = "0.17.1"
-num-traits = "0.2.19"
+ndarray = { version = "0.17.1", default-features = false }
+num-traits = { version = "0.2.19", default-features = false }
 
 [[bin]]
 name = "align"
 path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+strip = false
+debug = true
