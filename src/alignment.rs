@@ -90,11 +90,6 @@ fn traceback_from_position<T: Clone + Copy + Zero + Display>(
     while let Some(node_idx) = stack.pop() {
         let (matrix, row, col) = nodes[node_idx].pointer;
 
-        if row == 0 && col == 0 {
-            leaf_nodes.push(node_idx);
-            continue;
-        }
-
         let pointers = match matrix {
             M => align_grid.m_matrix.get_pointers(row, col),
             Ix => align_grid.ix_matrix.get_pointers(row, col),
