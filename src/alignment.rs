@@ -111,6 +111,7 @@ fn traceback_from_position<T: Clone + Copy + Zero + Display>(
         }
     }
 
+    println!("Number of leaf nodes: {}", leaf_nodes.len());
     // Reconstruct paths from leaf nodes
     let mut complete_paths = Vec::new();
     for leaf_idx in leaf_nodes {
@@ -124,7 +125,7 @@ fn traceback_from_position<T: Clone + Copy + Zero + Display>(
 
         complete_paths.push(path);
     }
-
+    println!("Number of complete paths: {}", complete_paths.len());
     complete_paths
 }
 
@@ -170,8 +171,6 @@ pub fn traceback<T: Copy + FromStr + Display + Epsilon + PartialOrd + Zero>(
             }
         }
 
-        align_a.reverse();
-        align_b.reverse();
         alignments.push((align_a.into_iter().collect(), align_b.into_iter().collect()));
     }
 
