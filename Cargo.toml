@@ -1,0 +1,12 @@
+[package]
+name = "sequence_alignment"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ndarray = "0.17.1"
+num-traits = "0.2.19"
+
+[[bin]]
+name = "align"
+path = "src/main.rs"

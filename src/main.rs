@@ -1,39 +1,30 @@
-use std::env;
-use std::process;
-
 mod alignment;
-mod error;
 mod io;
-mod matrix;
-mod parameters;
-mod traceback;
+mod models;
+mod utils;
 
-use alignment::SequenceAligner;
-use error::Result;
+use crate::alignment::{traceback, write_output};
+use crate::io::parameters::AlignmentParameters;
+use crate::models::AlignGrid;
+use std::env;
+use std::error::Error;
 
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("Error: {}", e);
-        process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
+fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
+        eprintln!("Please specify an input file and an output file as args.");
         eprintln!("Usage: {} <input_file> <output_file>", args[0]);
-        process::exit(1);
+        std::process::exit(1);
     }
 
     let input_file = &args[1];
     let output_file = &args[2];
 
-    let params = parameters::AlignmentParameters::from_file(input_file)?;
-    let mut aligner = SequenceAligner::new(params);
-    let result = aligner.align();
-
-    io::write_alignment_result(output_file, &result)?;
-
+    let parameters = AlignmentParameters::<f64>::load_from_file(input_file)?;
+    let mut grid = AlignGrid::new(parameters.len_a(), parameters.len_b());
+    let _ = grid.populate_score_matrices(&parameters)?;
+    let (max_score, traceback) = traceback(&grid, &parameters)?;
+    write_output(output_file, max_score, &traceback)?;
     Ok(())
 }

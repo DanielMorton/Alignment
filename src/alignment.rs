@@ -1,153 +1,202 @@
-use crate::matrix::MatrixSet;
-use crate::parameters::{AlignmentParameters, AlignmentType};
-use crate::traceback::{AlignmentResult, TracebackEngine};
+use crate::io::parameters::AlignmentParameters;
+use crate::models::score_matrix::MatrixType::{Ix, Iy, M};
+use crate::models::score_matrix::{MatrixType, Pointer};
+use crate::models::AlignGrid;
+use crate::utils::Epsilon;
+use num_traits::Zero;
+use std::collections::HashSet;
+use std::error::Error;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{self, Write};
+use std::str::FromStr;
 
-pub struct SequenceAligner {
-    params: AlignmentParameters,
-    matrices: MatrixSet,
+fn find_traceback_start<T: Copy + Display + Epsilon + FromStr + PartialOrd + Zero>(
+    align_grid: &AlignGrid<T>,
+    alignment_parameters: &AlignmentParameters<T>,
+) -> (T, HashSet<Pointer>) {
+    let mut max_val;
+    let mut max_loc = HashSet::new();
+
+    if alignment_parameters.global_alignment {
+        let max_row = align_grid.m_matrix.nrow - 1;
+        let max_col = align_grid.m_matrix.ncol - 1;
+
+        let m = align_grid.m_matrix.get_score(max_row, max_col);
+        max_val = m;
+        max_loc.insert((M, max_row, max_col));
+
+        let ix = align_grid.ix_matrix.get_score(max_row, max_col);
+        if ix > max_val && !T::fuzzy_equals(ix, max_val) {
+            max_val = ix;
+            max_loc.clear();
+            max_loc.insert((Ix, max_row, max_col));
+        } else if T::fuzzy_equals(ix, max_val) {
+            max_loc.insert((Ix, max_row, max_col));
+        }
+
+        let iy = align_grid.iy_matrix.get_score(max_row, max_col);
+        if iy > max_val && !T::fuzzy_equals(iy, max_val) {
+            max_val = iy;
+            max_loc.clear();
+            max_loc.insert((Iy, max_row, max_col));
+        } else if T::fuzzy_equals(iy, max_val) {
+            max_loc.insert((Iy, max_row, max_col));
+        }
+    } else {
+        max_val = T::zero();
+        let m_matrix = &align_grid.m_matrix;
+        for row in 0..m_matrix.nrow {
+            for col in 0..m_matrix.ncol {
+                let val = m_matrix.get_score(row, col);
+                if val > max_val && !T::fuzzy_equals(val, max_val) {
+                    max_val = val;
+                    max_loc.clear();
+                    max_loc.insert((MatrixType::M, row, col));
+                } else if T::fuzzy_equals(val, max_val) {
+                    max_loc.insert((MatrixType::M, row, col));
+                }
+            }
+        }
+    }
+
+    (max_val, max_loc)
 }
 
-impl SequenceAligner {
-    pub fn new(params: AlignmentParameters) -> Self {
-        let nrows = params.seq_a.len();
-        let ncols = params.seq_b.len();
-
-        // Check memory requirements
-        let total_cells = nrows * ncols * 3; // 3 matrices
-        let bytes_per_cell = 8; // f64
-        let total_mb = (total_cells * bytes_per_cell) / (1024 * 1024);
-
-        eprintln!("Allocating matrices: {}x{} cells ({} MB)", nrows, ncols, total_mb);
-
-        let matrices = MatrixSet::new(nrows, ncols);
-
-        Self { params, matrices }
+/// Perform traceback from a specific position using parent pointers
+fn traceback_from_position<T: Clone + Copy + Zero + Display>(
+    align_grid: &AlignGrid<T>,
+    start_matrix: MatrixType,
+    start_row: usize,
+    start_col: usize,
+) -> Vec<Vec<Pointer>> {
+    // Store nodes with parent indices to avoid cloning paths
+    struct Node {
+        pointer: Pointer,
+        parent: Option<usize>,
     }
 
-    pub fn align(&mut self) -> AlignmentResult {
-        self.initialize_matrices();
-        self.fill_matrices();
-        self.traceback()
-    }
+    let mut nodes = Vec::new();
+    let mut stack = Vec::new();
+    let mut leaf_nodes = Vec::new();
 
-    fn initialize_matrices(&mut self) {
-        let is_local = self.params.alignment_type == AlignmentType::Local;
-        let nrows = self.params.seq_a.len();
-        let ncols = self.params.seq_b.len();
+    // Add initial node
+    nodes.push(Node {
+        pointer: (start_matrix, start_row, start_col),
+        parent: None,
+    });
+    stack.push(0);
 
-        // Initialize first column
-        for row in 0..nrows {
-            let match_score = self.params.match_matrix.score(
-                self.params.seq_a[row],
-                self.params.seq_b[0]
-            );
-            let score = if is_local { match_score.max(0.0) } else { match_score };
-            self.matrices.m.set_score(row, 0, score);
+    while let Some(node_idx) = stack.pop() {
+        let (matrix, row, col) = nodes[node_idx].pointer;
 
-            if row > 0 {
-                self.update_ix(row, 0);
-            }
+        if row == 0 && col == 0 {
+            leaf_nodes.push(node_idx);
+            continue;
         }
 
-        // Initialize first row
-        for col in 0..ncols {
-            let match_score = self.params.match_matrix.score(
-                self.params.seq_a[0],
-                self.params.seq_b[col]
-            );
-            let score = if is_local { match_score.max(0.0) } else { match_score };
-            self.matrices.m.set_score(0, col, score);
-
-            if col > 0 {
-                self.update_iy(0, col);
-            }
-        }
-    }
-
-    fn fill_matrices(&mut self) {
-        let nrows = self.params.seq_a.len();
-        let ncols = self.params.seq_b.len();
-
-        for row in 1..nrows {
-            for col in 1..ncols {
-                self.update_m(row, col);
-                self.update_ix(row, col);
-                self.update_iy(row, col);
-            }
-
-            // Progress indicator for large alignments
-            if row % 1000 == 0 {
-                eprintln!("Processing row {}/{}", row, nrows);
-            }
-        }
-    }
-
-    #[inline]
-    fn update_m(&mut self, row: usize, col: usize) {
-        let match_score = self.params.match_matrix.score(
-            self.params.seq_a[row],
-            self.params.seq_b[col]
-        );
-
-        let m_prev = self.matrices.m.score(row - 1, col - 1);
-        let ix_prev = self.matrices.ix.score(row - 1, col - 1);
-        let iy_prev = self.matrices.iy.score(row - 1, col - 1);
-
-        let best_prev = m_prev.max(ix_prev).max(iy_prev);
-        let mut score = best_prev + match_score;
-
-        if self.params.alignment_type == AlignmentType::Local && score < 0.0 {
-            score = 0.0;
-        }
-
-        self.matrices.m.set_score(row, col, score);
-    }
-
-    #[inline]
-    fn update_ix(&mut self, row: usize, col: usize) {
-        let (dy, ey) = if self.params.alignment_type == AlignmentType::Global
-            && col == self.matrices.ix.ncols() - 1
-        {
-            (0.0, 0.0)
-        } else {
-            (self.params.gap_penalties.dy, self.params.gap_penalties.ey)
+        let pointers = match matrix {
+            M => align_grid.m_matrix.get_pointers(row, col),
+            Ix => align_grid.ix_matrix.get_pointers(row, col),
+            Iy => align_grid.iy_matrix.get_pointers(row, col),
         };
 
-        let m_prev = self.matrices.m.score(row - 1, col);
-        let ix_prev = self.matrices.ix.score(row - 1, col);
-
-        let mut score = (m_prev - dy).max(ix_prev - ey);
-        if self.params.alignment_type == AlignmentType::Local && score < 0.0 {
-            score = 0.0;
+        if pointers.is_empty() {
+            leaf_nodes.push(node_idx);
+            continue;
         }
 
-        self.matrices.ix.set_score(row, col, score);
+        for &pointer in pointers {
+            let new_node_idx = nodes.len();
+            nodes.push(Node {
+                pointer,
+                parent: Some(node_idx),
+            });
+            stack.push(new_node_idx);
+        }
     }
 
-    #[inline]
-    fn update_iy(&mut self, row: usize, col: usize) {
-        let (dx, ex) = if self.params.alignment_type == AlignmentType::Global
-            && row == self.matrices.iy.nrows() - 1
-        {
-            (0.0, 0.0)
-        } else {
-            (self.params.gap_penalties.dx, self.params.gap_penalties.ex)
-        };
+    // Reconstruct paths from leaf nodes
+    let mut complete_paths = Vec::new();
+    for leaf_idx in leaf_nodes {
+        let mut path = Vec::new();
+        let mut current_idx = Some(leaf_idx);
 
-        let m_prev = self.matrices.m.score(row, col - 1);
-        let iy_prev = self.matrices.iy.score(row, col - 1);
-
-        let mut score = (m_prev - dx).max(iy_prev - ex);
-        if self.params.alignment_type == AlignmentType::Local && score < 0.0 {
-            score = 0.0;
+        while let Some(idx) = current_idx {
+            path.push(nodes[idx].pointer);
+            current_idx = nodes[idx].parent;
         }
 
-        self.matrices.iy.set_score(row, col, score);
+        complete_paths.push(path);
     }
 
-    fn traceback(&self) -> AlignmentResult {
-        eprintln!("Starting traceback...");
-        let engine = TracebackEngine::new(&self.matrices, &self.params);
-        engine.traceback()
+    complete_paths
+}
+
+/// Perform traceback to generate alignments
+pub fn traceback<T: Copy + FromStr + Display + Epsilon + PartialOrd + Zero>(
+    align_grid: &AlignGrid<T>,
+    alignment_parameters: &AlignmentParameters<T>,
+) -> Result<(T, Vec<(String, String)>), Box<dyn Error>> {
+    let (max_val, max_loc) = find_traceback_start(align_grid, alignment_parameters);
+    let mut all_tracebacks = Vec::new();
+
+    for (matrix, row, col) in max_loc {
+        let tracebacks = traceback_from_position(align_grid, matrix, row, col);
+        all_tracebacks.extend(tracebacks);
     }
+
+    let seq_a_chars = &alignment_parameters.sequences.seq_a;
+    let seq_b_chars = &alignment_parameters.sequences.seq_b;
+    let mut alignments = Vec::new();
+
+    for traceback in all_tracebacks {
+        let mut align_a = Vec::new();
+        let mut align_b = Vec::new();
+
+        for (m, r, c) in traceback.iter() {
+            match m {
+                M => {
+                    align_a.push(seq_a_chars[*r]);
+                    align_b.push(seq_b_chars[*c]);
+                }
+                Ix => {
+                    if *c < align_grid.ix_matrix.ncol - 1 {
+                        align_a.push(seq_a_chars[*r]);
+                        align_b.push('_');
+                    }
+                }
+                Iy => {
+                    if *r < align_grid.iy_matrix.nrow - 1 {
+                        align_a.push('_');
+                        align_b.push(seq_b_chars[*c]);
+                    }
+                }
+            }
+        }
+
+        align_a.reverse();
+        align_b.reverse();
+        alignments.push((align_a.into_iter().collect(), align_b.into_iter().collect()));
+    }
+
+    Ok((max_val, alignments))
+}
+
+/// Write output to file
+pub fn write_output<T: Display>(
+    output_file: &str,
+    max_val: T,
+    alignments: &[(String, String)],
+) -> io::Result<()> {
+    let mut file = File::create(output_file)?;
+    writeln!(file, "{}", max_val)?;
+
+    for (align_a, align_b) in alignments {
+        writeln!(file)?;
+        writeln!(file, "{}", align_a)?;
+        writeln!(file, "{}", align_b)?;
+    }
+
+    Ok(())
 }
