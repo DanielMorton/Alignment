@@ -3,7 +3,7 @@ mod io;
 mod models;
 mod utils;
 
-use crate::alignment::{traceback, write_output};
+use crate::alignment::traceback;
 use crate::io::parameters::AlignmentParameters;
 use crate::models::AlignGrid;
 use std::env;
@@ -24,7 +24,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let parameters = AlignmentParameters::<f64>::load_from_file(input_file)?;
     let mut grid = AlignGrid::new(parameters.len_a(), parameters.len_b());
     let _ = grid.populate_score_matrices(&parameters)?;
-    let (max_score, traceback) = traceback(&grid, &parameters)?;
-    write_output(output_file, max_score, &traceback)?;
+    let _ = traceback(&grid, &parameters, output_file)?;
     Ok(())
 }

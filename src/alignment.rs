@@ -64,12 +64,14 @@ fn find_traceback_start<T: Copy + Display + Epsilon + FromStr + PartialOrd + Zer
 }
 
 /// Perform traceback from a specific position using parent pointers
-fn traceback_from_position<T: Clone + Copy + Zero + Display>(
+fn traceback_from_position<T: Clone + Copy + Display + FromStr + Zero>(
     align_grid: &AlignGrid<T>,
+    alignment_parameters: &AlignmentParameters<T>,
+    file: &mut File,
     start_matrix: MatrixType,
     start_row: usize,
     start_col: usize,
-) -> Vec<Vec<Pointer>> {
+) -> Result<(), Box<dyn Error>> {
     // Store nodes with parent indices to avoid cloning paths
     struct Node {
         pointer: Pointer,
@@ -111,42 +113,43 @@ fn traceback_from_position<T: Clone + Copy + Zero + Display>(
         }
     }
 
-    println!("Number of leaf nodes: {}", leaf_nodes.len());
-    // Reconstruct paths from leaf nodes
-    let mut complete_paths = Vec::new();
-    for leaf_idx in leaf_nodes {
-        let mut path = Vec::new();
-        let mut current_idx = Some(leaf_idx);
 
-        while let Some(idx) = current_idx {
-            path.push(nodes[idx].pointer);
-            current_idx = nodes[idx].parent;
+    const CHUNK_SIZE: usize = 16384;
+
+    for chunk in leaf_nodes.chunks(CHUNK_SIZE) {
+        let mut paths = Vec::new();
+        for &leaf_idx in chunk {
+            let mut path = Vec::new();
+            let mut current_idx = Some(leaf_idx);
+
+            while let Some(idx) = current_idx {
+                path.push(nodes[idx].pointer);
+                current_idx = nodes[idx].parent;
+            }
+
+            paths.push(path);
         }
-
-        complete_paths.push(path);
+        let alignments = traceback_paths(&paths, align_grid, alignment_parameters)?;
+        for (align_a, align_b) in alignments {
+            writeln!(file)?;
+            writeln!(file, "{}", align_a)?;
+            writeln!(file, "{}", align_b)?;
+        }
     }
-    println!("Number of complete paths: {}", complete_paths.len());
-    complete_paths
+
+    Ok(())
 }
 
-/// Perform traceback to generate alignments
-pub fn traceback<T: Copy + FromStr + Display + Epsilon + PartialOrd + Zero>(
+fn traceback_paths<T: Copy + FromStr>(
+    tracebacks: &[Vec<Pointer>],
     align_grid: &AlignGrid<T>,
-    alignment_parameters: &AlignmentParameters<T>,
-) -> Result<(T, Vec<(String, String)>), Box<dyn Error>> {
-    let (max_val, max_loc) = find_traceback_start(align_grid, alignment_parameters);
-    let mut all_tracebacks = Vec::new();
-
-    for (matrix, row, col) in max_loc {
-        let tracebacks = traceback_from_position(align_grid, matrix, row, col);
-        all_tracebacks.extend(tracebacks);
-    }
-
+    alignment_parameters: &AlignmentParameters<T>
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     let seq_a_chars = &alignment_parameters.sequences.seq_a;
     let seq_b_chars = &alignment_parameters.sequences.seq_b;
     let mut alignments = Vec::new();
 
-    for traceback in all_tracebacks {
+    for traceback in tracebacks {
         let mut align_a = Vec::new();
         let mut align_b = Vec::new();
 
@@ -173,8 +176,30 @@ pub fn traceback<T: Copy + FromStr + Display + Epsilon + PartialOrd + Zero>(
 
         alignments.push((align_a.into_iter().collect(), align_b.into_iter().collect()));
     }
+    Ok(alignments)
+}
 
-    Ok((max_val, alignments))
+/// Perform traceback to generate alignments
+pub fn traceback<T: Copy + FromStr + Display + Epsilon + PartialOrd + Zero>(
+    align_grid: &AlignGrid<T>,
+    alignment_parameters: &AlignmentParameters<T>,
+    output_file: &str
+) -> Result<(), Box<dyn Error>> {
+    let (max_val, max_loc) = find_traceback_start(align_grid, alignment_parameters);
+
+    let mut file = File::create(output_file)?;
+    writeln!(file, "{}", max_val)?;
+
+    for (matrix, row, col) in max_loc {
+        let _ = traceback_from_position(align_grid,
+                                                 alignment_parameters,
+                                                 &mut file,
+                                                 matrix,
+                                                 row,
+                                                 col)?;
+    }
+
+    Ok(())
 }
 
 /// Write output to file
