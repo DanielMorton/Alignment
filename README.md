@@ -538,13 +538,9 @@ When contributing:
 6. Use `Result<T, E>` for fallible operations
 7. Prefer iterator chains over explicit loops where appropriate
 
-## Unsafe Code
-
-This implementation contains **zero unsafe code blocks**. All memory safety is guaranteed by Rust's type system and borrow checker.
-
 ## License
 
-[Specify your license here]
+MIT License
 
 ## References
 
@@ -561,7 +557,7 @@ This implementation contains **zero unsafe code blocks**. All memory safety is g
 
 ## Authors
 
-[Your name/organization]
+Daniel Morton
 
 ## Version History
 
